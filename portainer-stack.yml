@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  softphone:
+    image: node:20-alpine
+    container_name: softphone
+    working_dir: /app
+    restart: unless-stopped
+    command: >
+      sh -c "npm ci --production &&
+             npm run start"
+    ports:
+      - "3002:3002"  # Gateway SIP
+      - "3002:3002/udp"  # Gateway UDP port for SIP/VoIP
+      - "8082:8082"  # Frontend
+      - "5060:5060/udp"  # SIP standard port
+      - "10000-10010:10000-10010/udp"  # RTP media ports
+    volumes:
+      - ./:/app
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - VITE_APP_PORT=8082
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+    networks:
+      - softphone_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.softphone.rule=Host(`softphone.vendananet.com.br`)"
+      - "traefik.http.services.softphone.loadbalancer.server.port=8082"
+      - "traefik.http.routers.softphone.entrypoints=websecure"
+      - "traefik.http.routers.softphone.tls=true"
+      
+      # Gateway SIP
+      - "traefik.http.routers.softphone-gateway.rule=Host(`gateway.softphone.vendananet.com.br`)"
+      - "traefik.http.services.softphone-gateway.loadbalancer.server.port=3002"
+      - "traefik.http.routers.softphone-gateway.entrypoints=websecure"
+      - "traefik.http.routers.softphone-gateway.tls=true"
+
+networks:
+  softphone_network:
+    name: softphone_network
+    driver: bridge
+    external: true

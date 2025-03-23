@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  softphone:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: softphone
+    restart: unless-stopped
+    ports:
+      - "3002:3002"  # Gateway port
+      - "3002:3002/udp"  # Gateway UDP port for SIP/VoIP
+      - "8082:8082"  # Frontend port
+      - "5060:5060/udp"  # SIP standard port
+      - "10000-10010:10000-10010/udp"  # RTP media ports
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - VITE_APP_PORT=8082
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+    networks:
+      - softphone_network
+
+networks:
+  softphone_network:
+    name: softphone_network
+    driver: bridge
+    external: true
