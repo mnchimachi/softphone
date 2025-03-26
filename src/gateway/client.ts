@@ -1,8 +1,8 @@
-import { io, Socket } from 'socket.io-client';
+import io from 'socket.io-client'; // Correção aqui
 import type { SipConfig } from '../types/Contact';
 
 export class SipClient {
-  private socket: Socket;
+  private socket: SocketIOClient.Socket; // Ajuste o tipo conforme necessário
   private connectionTimeout: number = 10000; // 10 segundos timeout
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 3;
@@ -96,28 +96,3 @@ export class SipClient {
       }, this.connectionTimeout);
 
       try {
-        this.socket.emit('sipCall', { destination, config }, (response: any) => {
-          clearTimeout(timeout);
-          if (response?.error) {
-            reject(new Error(response.error));
-          } else {
-            resolve(response);
-          }
-        });
-      } catch (error) {
-        clearTimeout(timeout);
-        reject(error);
-      }
-    });
-  }
-
-  onCallStatus(callback: (status: any) => void) {
-    this.socket.on('sipStatus', callback);
-  }
-
-  disconnect() {
-    if (this.socket) {
-      this.socket.disconnect();
-    }
-  }
-}
