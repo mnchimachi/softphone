@@ -33,7 +33,6 @@ class HttpSipGateway {
   }
 
   private setupRoutes() {
-    // API endpoints para controle de chamadas
     this.app.post('/api/call', express.json(), (req, res) => {
       const { from, to, sipConfig } = req.body;
       
@@ -80,7 +79,6 @@ class HttpSipGateway {
       res.json({ status: call.status });
     });
 
-    // Health check
     this.app.get('/health', (_, res) => {
       res.json({ status: 'ok' });
     });
@@ -104,18 +102,24 @@ class HttpSipGateway {
     const callId = uuidv4();
 
     const configuration = {
-      uri: `sip:${from}@${sipConfig.dominio}`,
+      uri: `sip:${from}@${sipConfig.servidor}`,
       password: sipConfig.senha,
-      display_name: sipConfig.nomeConta,
+      display_name: sipConfig.nomeConta || from,
+      sockets: [
+        {
+          socket: new JsSIP.WebSocketInterface(`ws://${sipConfig.servidor}:5060`),
+          via_transport: sipConfig.transport || 'udp'
+        }
+      ],
       register: true,
-      registrar_server: `sip:${sipConfig.servidor}`,
-      ws_servers: [`wss://${sipConfig.servidor}:7443/ws`],
+      registrar_server: `sip:${sipConfig.servidor}:5060`,
       register_expires: 300,
-      use_preloaded_route: true,
       connection_recovery_min_interval: 2,
       connection_recovery_max_interval: 30,
       hack_via_tcp: true,
-      hack_ip_in_contact: true
+      hack_ip_in_contact: true,
+      session_timers: false,
+      no_answer_timeout: 60
     };
 
     const ua = new JsSIP.UA(configuration);
@@ -132,9 +136,8 @@ class HttpSipGateway {
 
     ua.start();
     
-    // Inicia a chamada após o registro
     ua.on('registered', () => {
-      const session = ua.call(to, {
+      const session = ua.call(`sip:${to}@${sipConfig.servidor}`, {
         mediaConstraints: { audio: true, video: false },
         rtcOfferConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false }
       });
@@ -151,8 +154,8 @@ class HttpSipGateway {
       this.updateCallStatus(callId, 'connected');
     });
 
-    ua.on('disconnected', () => {
-      this.updateCallStatus(callId, 'disconnected');
+    ua.on('disconnected', (error: any) => {
+      this.updateCallStatus(callId, 'disconnected', error?.message);
     });
 
     ua.on('registered', () => {
@@ -161,6 +164,12 @@ class HttpSipGateway {
 
     ua.on('registrationFailed', (e: any) => {
       this.updateCallStatus(callId, 'registration_failed', e.cause);
+    });
+
+    ua.on('newRTCSession', (data: { session: JsSIP.RTCSession }) => {
+      if (!data.session.isEstablished() && data.session.direction === 'incoming') {
+        this.setupSessionListeners(data.session, uuidv4());
+      }
     });
   }
 
@@ -173,8 +182,8 @@ class HttpSipGateway {
       this.updateCallStatus(callId, 'accepted');
     });
 
-    session.on('ended', () => {
-      this.updateCallStatus(callId, 'ended');
+    session.on('ended', (e: any) => {
+      this.updateCallStatus(callId, 'ended', e.cause);
     });
 
     session.on('failed', (e: any) => {
