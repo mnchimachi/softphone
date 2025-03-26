@@ -33,7 +33,9 @@ class HttpSipGateway {
   }
 
   private setupRoutes() {
-    this.app.post('/api/call', express.json(), (req, res) => {
+    this.app.use(express.json());
+
+    this.app.post('/api/call', (req, res) => {
       const { from, to, sipConfig } = req.body;
       
       try {
@@ -107,8 +109,7 @@ class HttpSipGateway {
       display_name: sipConfig.nomeConta || from,
       sockets: [
         {
-          socket: new JsSIP.WebSocketInterface(`ws://${sipConfig.servidor}:5060`),
-          via_transport: sipConfig.transport || 'udp'
+          uri: `sip:${sipConfig.servidor}:5060;transport=${sipConfig.transport || 'udp'}`
         }
       ],
       register: true,
@@ -151,18 +152,22 @@ class HttpSipGateway {
 
   private setupUAListeners(ua: JsSIP.UA, callId: string) {
     ua.on('connected', () => {
+      console.log('UA Connected');
       this.updateCallStatus(callId, 'connected');
     });
 
     ua.on('disconnected', (error: any) => {
+      console.error('UA Disconnected', error);
       this.updateCallStatus(callId, 'disconnected', error?.message);
     });
 
     ua.on('registered', () => {
+      console.log('UA Registered');
       this.updateCallStatus(callId, 'registered');
     });
 
     ua.on('registrationFailed', (e: any) => {
+      console.error('Registration failed:', e);
       this.updateCallStatus(callId, 'registration_failed', e.cause);
     });
 
@@ -175,18 +180,22 @@ class HttpSipGateway {
 
   private setupSessionListeners(session: JsSIP.RTCSession, callId: string) {
     session.on('connecting', () => {
+      console.log('Call connecting');
       this.updateCallStatus(callId, 'connecting');
     });
 
     session.on('accepted', () => {
+      console.log('Call accepted');
       this.updateCallStatus(callId, 'accepted');
     });
 
     session.on('ended', (e: any) => {
+      console.log('Call ended', e.cause);
       this.updateCallStatus(callId, 'ended', e.cause);
     });
 
     session.on('failed', (e: any) => {
+      console.error('Call failed:', e);
       this.updateCallStatus(callId, 'failed', e.cause);
     });
   }
