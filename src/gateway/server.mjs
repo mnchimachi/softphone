@@ -40,18 +40,14 @@ io.on('connection', (socket) => {
         currentUA.stop();
       }
 
-      // Configure SIP UA with the correct transport
+      // Configure SIP UA with WebSocket transport
       const configuration = {
         uri: `sip:${config.usuario}@${config.dominio}`,
         password: config.senha,
         display_name: config.nomeConta,
         register: true,
-        registrar_server: `sip:${config.servidor}:5060`,
-        sockets: [
-          {
-            uri: `sip:${config.servidor}:5060;transport=${config.transport || 'udp'}`
-          }
-        ],
+        registrar_server: `sip:${config.servidor}`,
+        ws_servers: [`wss://${config.servidor}:7443/ws`],
         register_expires: 300,
         use_preloaded_route: true,
         connection_recovery_min_interval: 2,
