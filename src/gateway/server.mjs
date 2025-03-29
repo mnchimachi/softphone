@@ -1,170 +1,199 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
+
 import JsSIP from 'jssip';
-import cors from 'cors';
+import { Server } from 'socket.io';
+import { WebSocketServer } from 'ws';
+import { createServer } from 'http';
 
-const app = express();
-const httpServer = createServer(app);
-
-// Configure CORS
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-  credentials: true
-}));
-
-// Parse JSON bodies
-app.use(express.json());
+const httpServer = createServer();
+const TIMEOUT = 10000; // 10 segundos
 
 const io = new Server(httpServer, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    credentials: true
-  },
+  cors: { origin: "*", methods: ["GET", "POST"] },
   transports: ['websocket', 'polling']
 });
 
-// Configure JsSIP debug
+// Configuração detalhada de logs
 JsSIP.debug.enable('JsSIP:*');
+const logger = {
+  debug: (...args) => console.debug('[SIP Debug]', ...args),
+  log: (...args) => console.log('[SIP Log]', ...args),
+  warn: (...args) => console.warn('[SIP Warn]', ...args),
+  error: (...args) => console.error('[SIP Error]', ...args)
+};
 
-// WebSocket connection handling
 io.on('connection', (socket) => {
-  console.log('New client connected');
   let currentUA = null;
 
   socket.on('sipConnect', (config) => {
     try {
-      if (currentUA) {
-        currentUA.stop();
-      }
+      if (currentUA) currentUA.stop();
 
-      // Configure SIP UA with the correct transport
+      // Configuração avançada do UA
       const configuration = {
         uri: `sip:${config.usuario}@${config.dominio}`,
         password: config.senha,
         display_name: config.nomeConta,
         register: true,
-        registrar_server: `sip:${config.servidor}:5060`,
-        sockets: [
-          {
-            uri: `sip:${config.servidor}:5060;transport=${config.transport || 'udp'}`
-          }
-        ],
         register_expires: 300,
-        use_preloaded_route: true,
+
+        // Múltiplos transportes com fallback
+        sockets: [
+          { uri: `wss://${config.servidor}:5060/ws` },
+          { uri: `tcp://${config.servidor}:5060` }
+        ],
+
+        // Configurações de recuperação
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
-        hack_via_tcp: true,
-        hack_ip_in_contact: true
+        connection_recovery_attempts: 3,
+
+        // Configurações de mídia WebRTC
+        rtc_constraints: {
+          optional: [
+            { DtlsSrtpKeyAgreement: true },
+            { googIPv6: true }
+          ]
+        },
+
+        // Prioridade de codecs
+        media_constraints: {
+          audio: {
+            codecs: ['PCMU', 'PCMA', 'opus'],
+            codecPayloads: {
+              PCMU: 0,
+              PCMA: 8,
+              opus: 111
+            }
+          },
+          video: false
+        },
+
+        // Configurações STUN/TURN
+        stun_servers: ['stun:stun.l.google.com:19302'],
+        turn_servers: [
+          {
+            urls: ['turn:seu-servidor-turn:3478'],
+            username: 'user',
+            credential: 'pass'
+          }
+        ]
       };
 
       const ua = new JsSIP.UA(configuration);
       currentUA = ua;
-      
-      ua.start();
 
-      // UA Events
+      // Timeout para conexão
+      const connectionTimeout = setTimeout(() => {
+        socket.emit('sipStatus', {
+          status: 'error',
+          error: 'Timeout na conexão SIP'
+        });
+        ua.stop();
+      }, TIMEOUT);
+
+      // Handlers de eventos
       ua.on('connected', () => {
-        console.log('UA Connected');
+        clearTimeout(connectionTimeout);
+        logger.log('UA Conectado');
         socket.emit('sipStatus', { status: 'connected' });
       });
 
       ua.on('disconnected', () => {
-        console.log('UA Disconnected');
+        logger.warn('UA Desconectado');
         socket.emit('sipStatus', { status: 'disconnected' });
       });
 
       ua.on('registered', () => {
-        console.log('UA Registered');
+        logger.log('UA Registrado');
         socket.emit('sipStatus', { status: 'registered' });
       });
 
       ua.on('registrationFailed', (e) => {
-        console.error('Registration failed:', e);
-        socket.emit('sipStatus', { 
-          status: 'error', 
-          error: `Falha no registro: ${e.cause}` 
+        logger.error('Falha no registro:', e);
+        if (e.status_code === 407) {
+          socket.emit('sipStatus', {
+            status: 'error',
+            error: 'Autenticação proxy requerida'
+          });
+        } else {
+          socket.emit('sipStatus', {
+            status: 'error',
+            error: `Falha no registro: ${e.cause}`
+          });
+        }
+      });
+
+      // Log detalhado de mensagens SIP
+      ua.on('newMessage', (e) => {
+        logger.debug('Nova mensagem SIP:', {
+          type: e.originator,
+          message: e.message
         });
       });
 
-      ua.on('registrationExpiring', () => {
-        console.log('Registration expiring, renewing...');
-        ua.register();
-      });
+      ua.start();
 
     } catch (error) {
-      console.error('SIP connection error:', error);
-      socket.emit('sipStatus', { 
-        status: 'error', 
-        error: error instanceof Error ? error.message : 'Erro desconhecido na conexão' 
+      logger.error('Erro na conexão SIP:', error);
+      socket.emit('sipStatus', {
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Erro desconhecido'
       });
     }
   });
 
-  // Handle SIP calls
-  socket.on('sipCall', async (data) => {
-    const { destination, config } = data;
-    
-    try {
-      if (!currentUA) {
-        throw new Error('Cliente SIP não inicializado');
-      }
+  // Gerenciamento de chamadas
+  socket.on('sipCall', (data) => {
+    if (!currentUA) {
+      socket.emit('sipStatus', {
+        status: 'error',
+        error: 'Cliente SIP não inicializado'
+      });
+      return;
+    }
 
-      const session = currentUA.call(destination, {
+    try {
+      const session = currentUA.call(data.destination, {
         mediaConstraints: { audio: true, video: false },
-        rtcOfferConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false }
+        rtcOfferConstraints: {
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: false
+        }
+      });
+
+      // Log de negociação SDP
+      session.on('sdp', (e) => {
+        logger.debug('Negociação SDP:', {
+          type: e.originator,
+          sdp: e.sdp
+        });
       });
 
       session.on('connecting', () => {
-        console.log('Call connecting');
         socket.emit('sipStatus', { status: 'connecting' });
       });
 
       session.on('accepted', () => {
-        console.log('Call accepted');
         socket.emit('sipStatus', { status: 'accepted' });
       });
 
-      session.on('ended', () => {
-        console.log('Call ended');
-        socket.emit('sipStatus', { status: 'ended' });
-      });
-
       session.on('failed', (e) => {
-        console.error('Call failed:', e);
-        socket.emit('sipStatus', { 
-          status: 'failed', 
-          error: `Chamada falhou: ${e.cause}` 
+        socket.emit('sipStatus', {
+          status: 'error',
+          error: `Chamada falhou: ${e.cause}`
         });
       });
 
     } catch (error) {
-      console.error('Call error:', error);
-      socket.emit('sipStatus', { 
-        status: 'error', 
-        error: error instanceof Error ? error.message : 'Erro ao realizar chamada' 
+      logger.error('Erro ao realizar chamada:', error);
+      socket.emit('sipStatus', {
+        status: 'error',
+        error: 'Erro ao iniciar chamada'
       });
     }
   });
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected');
-    if (currentUA) {
-      currentUA.stop();
-      currentUA = null;
-    }
-  });
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-
-// Start the server
-const PORT = process.env.PORT || 3002;
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`SIP Gateway running on port ${PORT}`);
+httpServer.listen(3002, '0.0.0.0', () => {
+  console.log('Gateway SIP rodando na porta 3002');
 });
